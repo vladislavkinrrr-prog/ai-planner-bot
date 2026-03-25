@@ -102,18 +102,94 @@ async def add(message: types.Message):
     await message.answer("Что записать, Босс?")
 
 
-# ---------- TODAY & STATISTICS (добавлены, чтобы кнопки работали) ----------
+# ---------- TODAY (только задачи на сегодняшний день) ----------
 @dp.message(F.text == "📅 Сегодня")
 async def show_today(message: types.Message):
-    await message.answer("📅 Сегодня: используй «📋 Список» для просмотра задач")
+    user_id = str(message.from_user.id)
+    data = await load_tasks()
+    tasks = data.get(user_id, [])
+    today = now().date()
+
+    displayed = False
+    for t in tasks:
+        try:
+            dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M")
+            if dt.date() != today:
+                continue
+
+            displayed = True
+            emoji = ["💡", "📌", "🔥"][t.get("priority", 0)]
+            task_id = t.get("task_id") or str(tasks.index(t))
+
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅", callback_data=f"done_{task_id}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"del_{task_id}")
+            ]])
+            await message.answer(
+                f"{emoji} {dt.strftime('%d.%m %H:%M')} — {t['text']}",
+                reply_markup=kb
+            )
+        except:
+            continue
+
+    if not displayed:
+        await message.answer("На сегодня задач нет 🎉")
 
 
+# ---------- STATISTICS (полная статистика с мотивацией) ----------
 @dp.message(F.text == "📊 Статистика")
 async def statistics(message: types.Message):
-    await message.answer("📊 Статистика: в разработке")
+    user_id = str(message.from_user.id)
+    data = await load_tasks()
+    tasks = data.get(user_id, [])
+
+    total = len(tasks)
+    if total == 0:
+        await message.answer("У тебя пока нет задач. Добавь первую! ➕")
+        return
+
+    done = sum(1 for t in tasks if t.get("done", False))
+    percent = int((done / total) * 100)
+
+    if 0 <= percent <= 5:
+        msg = "Мы вообще начинать планируем или это философский список задач? Давай, первая галочка самая важная."
+    elif 6 <= percent <= 10:
+        msg = "Ты не выспался? Эй, бро, давай поднажмём. Вот выполненные задачи:"
+    elif 11 <= percent <= 20:
+        msg = "Ну всё, лёд тронулся. Уже не ноль — это важно. Продолжаем."
+    elif 21 <= percent <= 30:
+        msg = "Разогнался. Уже видно, что это не просто список для красоты."
+    elif 31 <= percent <= 40:
+        msg = "Темп есть. Если не сольёшься сейчас — будет красиво."
+    elif 41 <= percent <= 50:
+        msg = "Полпути пройдено. Как ни крути — впереди ещё столько же."
+    elif 51 <= percent <= 60:
+        msg = "Вот это уже рабочее настроение. Осталось меньше, чем сделано."
+    elif 61 <= percent <= 70:
+        msg = "Ты в зоне. Главное — не расслабляться, финиш уже виден."
+    elif 71 <= percent <= 80:
+        msg = "Почти дожал. Осталось чуть-чуть, не тормози сейчас."
+    elif 81 <= percent <= 90:
+        msg = "Бро, я знал. Верил. Не зря же я тебя называю боссом."
+    elif 91 <= percent <= 100:
+        msg = "Закрыл всё. Чисто. Без шансов для прокрастинации. Уважаю."
+    else:
+        msg = "Что-то странное с процентами..."
+
+    await message.answer(msg)
+
+    # Отдельное сообщение со статистикой
+    remaining = total - done
+    stats_text = (
+        f"📊 Статистика:\n"
+        f"Всего задач: {total}\n"
+        f"Выполнено: {done}\n"
+        f"Осталось: {remaining}"
+    )
+    await message.answer(stats_text)
 
 
-# ---------- LIST ----------
+# ---------- LIST (все задачи) ----------
 @dp.message(F.text == "📋 Список")
 async def list_tasks(message: types.Message):
     user_id = str(message.from_user.id)
@@ -123,22 +199,25 @@ async def list_tasks(message: types.Message):
         await message.answer("Нет задач")
         return
 
-    for i, t in enumerate(tasks):
-        dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M")
-        emoji = ["💡", "📌", "🔥"][t.get("priority", 0)]
-        task_id = t.get("task_id") or str(i)
+    for t in tasks:  # используем task_id вместо индекса
+        try:
+            dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M")
+            emoji = ["💡", "📌", "🔥"][t.get("priority", 0)]
+            task_id = t.get("task_id") or str(tasks.index(t))
 
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅", callback_data=f"done_{task_id}"),
-            InlineKeyboardButton(text="🗑", callback_data=f"del_{task_id}")
-        ]])
-        await message.answer(
-            f"{emoji} {dt.strftime('%d.%m %H:%M')} — {t['text']}",
-            reply_markup=kb
-        )
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅", callback_data=f"done_{task_id}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"del_{task_id}")
+            ]])
+            await message.answer(
+                f"{emoji} {dt.strftime('%d.%m %H:%M')} — {t['text']}",
+                reply_markup=kb
+            )
+        except:
+            continue
 
 
-# ---------- INPUT (теперь после всех кнопок) ----------
+# ---------- INPUT ----------
 @dp.message(F.text)
 async def handle(message: types.Message):
     user_id = str(message.from_user.id)
@@ -202,7 +281,7 @@ async def mark_done(call: types.CallbackQuery):
             updated = True
             break
     else:
-        # legacy fallback (для старых задач без task_id)
+        # legacy fallback
         if task_id.isdigit():
             try:
                 idx = int(task_id)
@@ -257,7 +336,7 @@ async def delete_task(call: types.CallbackQuery):
         await call.answer("Задача не найдена")
 
 
-# ---------- REMINDER (исправлено всё) ----------
+# ---------- REMINDER ----------
 async def reminder_loop():
     while True:
         current = now()
@@ -280,7 +359,7 @@ async def reminder_loop():
                         await bot.send_message(int(user_id), f"🔔 {task['text']}")
                         task["reminded"] = True
                     except:
-                        pass  # пользователь мог заблокировать бота
+                        pass
 
                 # повтор
                 if task.get("repeat") == "daily" and diff < -60:
