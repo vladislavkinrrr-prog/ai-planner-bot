@@ -51,90 +51,104 @@ def save_tasks(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-# ---------- ПАРСИНГ ----------
-def parse_time(text):
-    match = re.search(r"(\d{1,2}):(\d{2})", text)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-
-    if "утром" in text:
-        return 9, 0
-    if "днем" in text or "обед" in text:
-        return 13, 0
-    if "вечером" in text:
-        return 19, 0
-    if "ночью" in text:
-        return 1, 0
-
-    return 9, 0
-
-
-def parse_date(text):
+# ---------- NLP ----------
+def parse(text):
+    text = text.lower()
     base = now()
 
+    # дата
     if "завтра" in text:
         base += timedelta(days=1)
 
-    return base
+    if "через неделю" in text:
+        base += timedelta(days=7)
+
+    # время
+    match = re.search(r"(\d{1,2}):(\d{2})", text)
+    if match:
+        hour, minute = int(match.group(1)), int(match.group(2))
+    elif "утром" in text:
+        hour, minute = 9, 0
+    elif "днем" in text:
+        hour, minute = 13, 0
+    elif "вечером" in text:
+        hour, minute = 19, 0
+    else:
+        hour, minute = 9, 0
+
+    dt = base.replace(hour=hour, minute=minute, second=0)
+
+    # не в прошлое
+    if dt < now():
+        dt += timedelta(days=1)
+
+    # повтор
+    repeat = None
+    if "каждый день" in text:
+        repeat = "daily"
+    elif "через день" in text:
+        repeat = "2days"
+    elif "каждый месяц" in text:
+        repeat = "monthly"
+
+    # напоминание
+    remind = 60
+    if "за день" in text:
+        remind = 1440
+    elif "за 2 часа" in text:
+        remind = 120
+
+    return dt, repeat, remind
 
 
 # ---------- START ----------
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("Босс, я на месте 😎", reply_markup=main_kb)
+    await message.answer("Босс, система готова 😎", reply_markup=main_kb)
 
 
 # ---------- ДОБАВИТЬ ----------
 @dp.message(F.text == "➕ Добавить")
-@dp.message(Command("add"))
 async def add(message: types.Message):
-    user_states[str(message.from_user.id)] = "waiting_text"
-
+    user_states[str(message.from_user.id)] = "waiting"
     await message.answer("Что записать, Босс?")
 
 
-# ---------- ВВОД ЗАДАЧИ ----------
+# ---------- ВВОД ----------
 @dp.message(F.text)
-async def handle_text(message: types.Message):
+async def handle(message: types.Message):
     user_id = str(message.from_user.id)
 
-    # ❗ ВАЖНО: если НЕ режим ввода — пропускаем
-    if user_states.get(user_id) != "waiting_text":
+    if user_states.get(user_id) != "waiting":
         return
 
-    text = message.text.lower()
+    dt, repeat, remind = parse(message.text)
 
-    try:
-        date = parse_date(text)
-        hour, minute = parse_time(text)
+    temp_tasks[user_id] = {
+        "text": message.text,
+        "datetime": dt.strftime("%Y-%m-%d %H:%M"),
+        "repeat": repeat,
+        "remind": remind,
+        "done": False,
+        "reminded": False
+    }
 
-        dt = date.replace(hour=hour, minute=minute, second=0)
+    user_states[user_id] = "priority"
 
-        temp_tasks[user_id] = {
-            "text": message.text,
-            "datetime": dt.strftime("%Y-%m-%d %H:%M"),
-            "done": False
-        }
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔥", callback_data="p_2"),
+            InlineKeyboardButton(text="📌", callback_data="p_1"),
+            InlineKeyboardButton(text="💡", callback_data="p_0"),
+        ]
+    ])
 
-        user_states[user_id] = "waiting_priority"
-
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🔥", callback_data="p_2"),
-                InlineKeyboardButton(text="📌", callback_data="p_1"),
-                InlineKeyboardButton(text="💡", callback_data="p_0")
-            ]
-        ])
-
-        await message.answer("Выбери приоритет:", reply_markup=kb)
-
-    except:
-        await message.answer("❌ Ошибка ввода")
+    await message.answer("Выбери приоритет:", reply_markup=kb)
 
 
 # ---------- ПРИОРИТЕТ ----------
 @dp.callback_query(F.data.startswith("p_"))
-async def set_priority(call: types.CallbackQuery):
+async def priority(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
 
     task = temp_tasks.get(user_id)
@@ -157,59 +171,123 @@ async def set_priority(call: types.CallbackQuery):
 
 # ---------- СПИСОК ----------
 @dp.message(F.text == "📋 Список")
-async def show_list(message: types.Message):
+async def list_tasks(message: types.Message):
     user_id = str(message.from_user.id)
-    data = load_tasks()
-
-    tasks = data.get(user_id, [])
+    tasks = load_tasks().get(user_id, [])
 
     if not tasks:
         await message.answer("Нет задач")
         return
 
     for i, t in enumerate(tasks):
-        await message.answer(f"{t['datetime']} — {t['text']}")
+        dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M")
+        emoji = ["💡", "📌", "🔥"][t["priority"]]
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅", callback_data=f"done_{i}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"del_{i}")
+            ]
+        ])
+
+        await message.answer(f"{emoji} {dt.strftime('%d.%m %H:%M')} — {t['text']}", reply_markup=kb)
 
 
 # ---------- СЕГОДНЯ ----------
 @dp.message(F.text == "📅 Сегодня")
 async def today(message: types.Message):
     user_id = str(message.from_user.id)
-    data = load_tasks()
+    tasks = load_tasks().get(user_id, [])
 
     today_str = now().strftime("%Y-%m-%d")
 
-    tasks = [
-        t for t in data.get(user_id, [])
-        if t["datetime"].startswith(today_str)
-    ]
+    result = [t for t in tasks if t["datetime"].startswith(today_str)]
 
-    if not tasks:
+    if not result:
         await message.answer("Нет задач")
         return
 
-    for t in tasks:
-        await message.answer(f"{t['datetime']} — {t['text']}")
+    text = "📅 Сегодня:\n\n"
+    for t in result:
+        dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M")
+        text += f"{dt.strftime('%H:%M')} — {t['text']}\n"
+
+    await message.answer(text)
 
 
 # ---------- СТАТИСТИКА ----------
 @dp.message(F.text == "📊 Статистика")
 async def stats(message: types.Message):
     user_id = str(message.from_user.id)
-    data = load_tasks()
-
-    tasks = data.get(user_id, [])
+    tasks = load_tasks().get(user_id, [])
 
     done = sum(1 for t in tasks if t.get("done"))
 
     await message.answer(
         f"📊 Всего: {len(tasks)}\n"
-        f"✅ Выполнено: {done}"
+        f"✅ Выполнено: {done}\n"
+        f"📌 Активных: {len(tasks)-done}"
     )
 
 
-# ---------- MAIN ----------
+# ---------- CALLBACK ----------
+@dp.callback_query(F.data.startswith(("done_", "del_")))
+async def actions(call: types.CallbackQuery):
+    user_id = str(call.from_user.id)
+    data = load_tasks()
+
+    action, index = call.data.split("_")
+    index = int(index)
+
+    if action == "done":
+        data[user_id][index]["done"] = True
+    else:
+        data[user_id].pop(index)
+
+    save_tasks(data)
+
+    await call.message.edit_reply_markup()
+    await call.answer("Готово")
+
+
+# ---------- НАПОМИНАНИЯ ----------
+async def reminder_loop():
+    while True:
+        current = now()
+        data = load_tasks()
+
+        for user_id, tasks in data.items():
+            for task in tasks:
+                if task.get("done"):
+                    continue
+
+                task_time = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
+                diff = (task_time - current).total_seconds() / 60
+
+                # 🔔 напоминание
+                if not task["reminded"] and 0 <= diff <= task["remind"]:
+                    await bot.send_message(user_id, f"🔔 Босс, скоро: {task['text']}")
+                    task["reminded"] = True
+
+                # 🔁 повтор
+                if task["repeat"] == "daily" and diff < -60:
+                    task["datetime"] = (task_time + timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
+                    task["reminded"] = False
+
+                if task["repeat"] == "2days" and diff < -60:
+                    task["datetime"] = (task_time + timedelta(days=2)).strftime("%Y-%m-%d %H:%M")
+                    task["reminded"] = False
+
+                if task["repeat"] == "monthly" and diff < -60:
+                    task["datetime"] = (task_time + timedelta(days=30)).strftime("%Y-%m-%d %H:%M")
+                    task["reminded"] = False
+
+        save_tasks(data)
+        await asyncio.sleep(30)
+
+
 async def main():
+    asyncio.create_task(reminder_loop())
     await dp.start_polling(bot)
 
 
