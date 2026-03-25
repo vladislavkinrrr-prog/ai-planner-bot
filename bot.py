@@ -1,15 +1,17 @@
-user_states = {}
 import asyncio
 import json
 from datetime import datetime
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 
 TOKEN = "8429220607:AAEW1f9pa1pIjsF1Idl6wB-trIxP94i1OZY"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+# состояния пользователей
+user_states = {}
 
 # файл для хранения задач
 TASKS_FILE = "tasks.json"
@@ -43,7 +45,7 @@ async def start(message: types.Message):
     )
 
 
-# добавление задачи
+# команда добавления
 @dp.message(Command("add"))
 async def add_task(message: types.Message):
     user_id = str(message.from_user.id)
@@ -55,13 +57,23 @@ async def add_task(message: types.Message):
     )
 
 
-@dp.message()
+# обработка текста (НЕ команд)
+@dp.message(F.text & ~F.text.startswith("/"))
 async def handle_text(message: types.Message):
-    text = message.text
     user_id = str(message.from_user.id)
+
+    # если не ждём задачу — игнор
+    if user_states.get(user_id) != "waiting_task":
+        return
+
+    text = message.text
 
     try:
         parts = text.split(" ", 2)
+
+        if len(parts) < 3:
+            raise ValueError("Неверный формат")
+
         date_str = parts[0]
         time_str = parts[1]
         task_text = parts[2]
@@ -80,10 +92,15 @@ async def handle_text(message: types.Message):
 
         save_tasks(tasks)
 
+        # сброс состояния
+        user_states[user_id] = None
+
         await message.answer("✅ Задача добавлена")
 
     except:
-        await message.answer("❌ Неверный формат. Попробуй ещё раз.")
+        await message.answer(
+            "❌ Неверный формат.\n\nПример:\n19.04 16:00 Созвон"
+        )
 
 
 # задачи на сегодня
@@ -92,14 +109,13 @@ async def today_tasks(message: types.Message):
     user_id = str(message.from_user.id)
     tasks = load_tasks()
 
-    if user_id not in tasks:
+    if user_id not in tasks or not tasks[user_id]:
         await message.answer("Нет задач")
         return
 
     today = datetime.now().strftime("%Y-%m-%d")
 
     result = "📅 Сегодня:\n\n"
-
     found = False
 
     for task in tasks[user_id]:
@@ -119,7 +135,7 @@ async def all_tasks(message: types.Message):
     user_id = str(message.from_user.id)
     tasks = load_tasks()
 
-    if user_id not in tasks:
+    if user_id not in tasks or not tasks[user_id]:
         await message.answer("Нет задач")
         return
 
