@@ -38,17 +38,13 @@ async def start(message: types.Message):
     )
 
 
+# 🔥 КРАСИВОЕ СООБЩЕНИЕ
 @dp.message(Command("add"))
 async def add_task(message: types.Message):
     user_id = str(message.from_user.id)
-
-    # всегда принудительно включаем режим
     user_states[user_id] = "waiting_task"
 
-    await message.answer(
-        "Введи задачу:\n\n"
-        "19.04 16:00 Созвон"
-    )
+    await message.answer("Какую задачу записать, Босс 😎")
 
 
 @dp.message(F.text & ~F.text.startswith("/"))
@@ -70,7 +66,6 @@ async def handle_text(message: types.Message):
         time_str = parts[1]
         task_text = parts[2]
 
-        # добавляем текущий год
         current_year = datetime.now().year
         dt = datetime.strptime(
             f"{date_str} {time_str} {current_year}",
@@ -89,13 +84,20 @@ async def handle_text(message: types.Message):
 
         save_tasks(tasks)
 
-        # сброс состояния
         user_states.pop(user_id, None)
 
-        await message.answer("✅ Задача добавлена")
+        await message.answer("✅ Записал, Босс")
 
     except:
-        await message.answer("❌ Ошибка формата\nПример:\n19.04 16:00 Созвон")
+        await message.answer("❌ Формат: 19.04 16:00 Созвон")
+
+
+# 🔥 СОРТИРОВКА ЗАДАЧ
+def sort_tasks(task_list):
+    return sorted(
+        task_list,
+        key=lambda x: datetime.strptime(x["datetime"], "%Y-%m-%d %H:%M")
+    )
 
 
 @dp.message(Command("today"))
@@ -109,12 +111,14 @@ async def today_tasks(message: types.Message):
 
     today = datetime.now().strftime("%Y-%m-%d")
 
+    sorted_tasks = sort_tasks(tasks[user_id])
+
     result = "📅 Сегодня:\n\n"
     found = False
 
-    for task in tasks[user_id]:
+    for task in sorted_tasks:
         if task["datetime"].startswith(today):
-            result += f"{task['datetime'][11:16]} - {task['text']}\n"
+            result += f"{task['datetime'][11:16]} — {task['text']}\n"
             found = True
 
     if not found:
@@ -132,9 +136,11 @@ async def all_tasks(message: types.Message):
         await message.answer("Нет задач")
         return
 
-    result = "📋 Все задачи:\n\n"
+    sorted_tasks = sort_tasks(tasks[user_id])
 
-    for task in tasks[user_id]:
+    result = "📋 Твои задачи, Босс:\n\n"
+
+    for task in sorted_tasks:
         dt = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
         formatted = dt.strftime("%d.%m %H:%M")
 
