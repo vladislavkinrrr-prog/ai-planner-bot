@@ -4,9 +4,14 @@ from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 
-TOKEN = "8429220607:AAEW1f9pa1pIjsF1Idl6wB-trIxP94i1OZY"
+TOKEN = "ТВОЙ_ТОКЕН"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -15,6 +20,16 @@ TASKS_FILE = "tasks.json"
 user_states = {}
 
 TIMEZONE_OFFSET = 3
+
+
+# ✅ НИЖНИЕ КНОПКИ
+main_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить")],
+        [KeyboardButton(text="📋 Список")]
+    ],
+    resize_keyboard=True
+)
 
 
 def now_local():
@@ -34,24 +49,31 @@ def save_tasks(tasks):
         json.dump(tasks, f, ensure_ascii=False, indent=2)
 
 
-# 🚀 START
+# 🚀 СТАРТ
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
-        "Я твой умный планировщик 😎\n\n"
-        "/add - добавить\n"
-        "/all - список"
+        "Я твой планировщик, Босс 😎",
+        reply_markup=main_kb
     )
 
 
-# ➕ ДОБАВИТЬ
-@dp.message(Command("add"))
-async def add_task(message: types.Message):
+# ➕ ДОБАВИТЬ (кнопка)
+@dp.message(F.text == "➕ Добавить")
+async def add_btn(message: types.Message):
     user_states[str(message.from_user.id)] = "waiting"
-    await message.answer("Напиши задачу:\n19.04 16:00 Созвон")
+    await message.answer("Какую задачу записать, Босс 😎")
+
+
+# ➕ ДОБАВИТЬ (команда)
+@dp.message(Command("add"))
+async def add_cmd(message: types.Message):
+    user_states[str(message.from_user.id)] = "waiting"
+    await message.answer("Какую задачу записать, Босс 😎")
 
 
 # 📋 СПИСОК
+@dp.message(F.text == "📋 Список")
 @dp.message(Command("all"))
 async def show_tasks(message: types.Message):
     user_id = str(message.from_user.id)
@@ -81,7 +103,7 @@ async def show_tasks(message: types.Message):
         await message.answer(text, reply_markup=kb)
 
 
-# ✍️ ВВОД
+# ✍️ ВВОД ЗАДАЧИ
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = str(message.from_user.id)
@@ -91,6 +113,10 @@ async def handle_text(message: types.Message):
 
     try:
         parts = message.text.split(" ", 2)
+
+        if len(parts) < 3:
+            raise ValueError()
+
         date_str, time_str, task_text = parts
 
         year = now_local().year
@@ -116,13 +142,13 @@ async def handle_text(message: types.Message):
 
         user_states.pop(user_id)
 
-        await message.answer("✅ Добавил")
+        await message.answer("✅ Записал, Босс")
 
     except:
         await message.answer("❌ Формат: 19.04 16:00 Созвон")
 
 
-# ✅ / 🗑 CALLBACK
+# 🔘 INLINE КНОПКИ
 @dp.callback_query()
 async def callbacks(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -131,12 +157,7 @@ async def callbacks(call: types.CallbackQuery):
     if user_id not in tasks:
         return
 
-    data = call.data
-
-    if "_" not in data:
-        return
-
-    action, index = data.split("_")
+    action, index = call.data.split("_")
     index = int(index)
 
     if index >= len(tasks[user_id]):
@@ -168,7 +189,6 @@ async def reminder_loop():
                 task_time = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
                 diff = (task_time - now).total_seconds()
 
-                # тест (1 мин)
                 if not task.get("reminded"):
                     if 0 <= diff <= 60:
                         await bot.send_message(user_id, f"🔔 {task['text']}")
