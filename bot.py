@@ -4,29 +4,17 @@ from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 TOKEN = "8429220607:AAEW1f9pa1pIjsF1Idl6wB-trIxP94i1OZY"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+TASKS_FILE = "tasks.json"
 user_states = {}
 
-TASKS_FILE = "tasks.json"
-
-TIMEZONE_OFFSET = 3  # поменяй при необходимости
-
-
-# ✅ КНОПКИ
-keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="➕ Добавить задачу")],
-        [KeyboardButton(text="📅 Сегодня"), KeyboardButton(text="📋 Все задачи")],
-        [KeyboardButton(text="🧪 Тест (1 минута)")]
-    ],
-    resize_keyboard=True
-)
+TIMEZONE_OFFSET = 3
 
 
 def now_local():
@@ -46,138 +34,69 @@ def save_tasks(tasks):
         json.dump(tasks, f, ensure_ascii=False, indent=2)
 
 
-# 🚀 СТАРТ
+# 🚀 START
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("Я твой планировщик, Босс 😎", reply_markup=keyboard)
+    await message.answer(
+        "Я твой умный планировщик 😎\n\n"
+        "/add - добавить\n"
+        "/all - список"
+    )
 
 
-# ➕ КНОПКА
-@dp.message(F.text == "➕ Добавить задачу")
-async def add_task_button(message: types.Message):
-    user_id = str(message.from_user.id)
-    user_states[user_id] = "waiting_task"
-    await message.answer("Какую задачу записать, Босс 😎")
-
-
-# ➕ КОМАНДА (на всякий случай)
+# ➕ ДОБАВИТЬ
 @dp.message(Command("add"))
-async def add_task_cmd(message: types.Message):
-    user_id = str(message.from_user.id)
-    user_states[user_id] = "waiting_task"
-    await message.answer("Какую задачу записать, Босс 😎")
+async def add_task(message: types.Message):
+    user_states[str(message.from_user.id)] = "waiting"
+    await message.answer("Напиши задачу:\n19.04 16:00 Созвон")
 
 
-# 🧪 ТЕСТ
-@dp.message(F.text == "🧪 Тест (1 минута)")
-async def test_task(message: types.Message):
-    user_id = str(message.from_user.id)
-
-    test_time = now_local() + timedelta(minutes=1)
-
-    tasks = load_tasks()
-
-    if user_id not in tasks:
-        tasks[user_id] = []
-
-    tasks[user_id].append({
-        "text": "ТЕСТОВАЯ ЗАДАЧА",
-        "datetime": test_time.strftime("%Y-%m-%d %H:%M"),
-        "reminded_test": False,
-        "reminded_1h": False
-    })
-
-    save_tasks(tasks)
-
-    await message.answer("✅ Тестовая задача добавлена")
-
-
-# 📅 СЕГОДНЯ (кнопка)
-@dp.message(F.text == "📅 Сегодня")
-async def today_tasks(message: types.Message):
-    await show_today(message)
-
-
-# 📅 СЕГОДНЯ (команда)
-@dp.message(Command("today"))
-async def today_cmd(message: types.Message):
-    await show_today(message)
-
-
-async def show_today(message: types.Message):
-    user_id = str(message.from_user.id)
-    tasks = load_tasks()
-
-    if user_id not in tasks:
-        await message.answer("Нет задач")
-        return
-
-    today = now_local().strftime("%Y-%m-%d")
-
-    result = "📅 Сегодня:\n\n"
-    found = False
-
-    for task in sorted(tasks[user_id], key=lambda x: x["datetime"]):
-        if task["datetime"].startswith(today):
-            dt = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
-            result += f"{dt.strftime('%H:%M')} — {task['text']}\n"
-            found = True
-
-    if not found:
-        result = "Нет задач на сегодня"
-
-    await message.answer(result)
-
-
-# 📋 ВСЕ (кнопка)
-@dp.message(F.text == "📋 Все задачи")
-async def all_tasks(message: types.Message):
-    await show_all(message)
-
-
-# 📋 ВСЕ (команда)
+# 📋 СПИСОК
 @dp.message(Command("all"))
-async def all_cmd(message: types.Message):
-    await show_all(message)
-
-
-async def show_all(message: types.Message):
+async def show_tasks(message: types.Message):
     user_id = str(message.from_user.id)
     tasks = load_tasks()
 
-    if user_id not in tasks:
+    if user_id not in tasks or not tasks[user_id]:
         await message.answer("Нет задач")
         return
 
-    result = "📋 Твои задачи:\n\n"
+    tasks_sorted = sorted(tasks[user_id], key=lambda x: x["datetime"])
 
-    for task in sorted(tasks[user_id], key=lambda x: x["datetime"]):
+    for i, task in enumerate(tasks_sorted):
         dt = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
-        result += f"{dt.strftime('%d.%m %H:%M')} — {task['text']}\n"
 
-    await message.answer(result)
+        text = f"{dt.strftime('%d.%m %H:%M')} — {task['text']}"
+
+        if task.get("done"):
+            text = "✅ " + text
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅", callback_data=f"done_{i}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"del_{i}")
+            ]
+        ])
+
+        await message.answer(text, reply_markup=kb)
 
 
-# ✍️ ВВОД ЗАДАЧИ (ВАЖНО — без фильтра !)
+# ✍️ ВВОД
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = str(message.from_user.id)
 
-    if user_states.get(user_id) != "waiting_task":
+    if user_states.get(user_id) != "waiting":
         return
 
     try:
         parts = message.text.split(" ", 2)
-
-        if len(parts) < 3:
-            raise ValueError()
-
         date_str, time_str, task_text = parts
 
-        current_year = now_local().year
+        year = now_local().year
 
         dt = datetime.strptime(
-            f"{date_str} {time_str} {current_year}",
+            f"{date_str} {time_str} {year}",
             "%d.%m %H:%M %Y"
         )
 
@@ -189,21 +108,53 @@ async def handle_text(message: types.Message):
         tasks[user_id].append({
             "text": task_text,
             "datetime": dt.strftime("%Y-%m-%d %H:%M"),
-            "reminded_test": False,
-            "reminded_1h": False
+            "done": False,
+            "reminded": False
         })
 
         save_tasks(tasks)
 
-        user_states.pop(user_id, None)
+        user_states.pop(user_id)
 
-        await message.answer("✅ Записал, Босс")
+        await message.answer("✅ Добавил")
 
     except:
         await message.answer("❌ Формат: 19.04 16:00 Созвон")
 
 
-# 🔥 НАПОМИНАНИЯ
+# ✅ / 🗑 CALLBACK
+@dp.callback_query()
+async def callbacks(call: types.CallbackQuery):
+    user_id = str(call.from_user.id)
+    tasks = load_tasks()
+
+    if user_id not in tasks:
+        return
+
+    data = call.data
+
+    if "_" not in data:
+        return
+
+    action, index = data.split("_")
+    index = int(index)
+
+    if index >= len(tasks[user_id]):
+        return
+
+    if action == "done":
+        tasks[user_id][index]["done"] = True
+
+    elif action == "del":
+        tasks[user_id].pop(index)
+
+    save_tasks(tasks)
+
+    await call.message.edit_reply_markup()
+    await call.answer("Готово")
+
+
+# 🔔 НАПОМИНАНИЯ
 async def reminder_loop():
     while True:
         now = now_local()
@@ -211,20 +162,17 @@ async def reminder_loop():
 
         for user_id, user_tasks in tasks.items():
             for task in user_tasks:
+                if task.get("done"):
+                    continue
+
                 task_time = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
                 diff = (task_time - now).total_seconds()
 
-                # 🧪 тест (1 минута)
-                if not task.get("reminded_test"):
+                # тест (1 мин)
+                if not task.get("reminded"):
                     if 0 <= diff <= 60:
                         await bot.send_message(user_id, f"🔔 {task['text']}")
-                        task["reminded_test"] = True
-
-                # ⏰ за 1 час
-                if not task.get("reminded_1h"):
-                    if 3540 <= diff <= 3600:
-                        await bot.send_message(user_id, f"⏰ Через 1 час: {task['text']}")
-                        task["reminded_1h"] = True
+                        task["reminded"] = True
 
         save_tasks(tasks)
         await asyncio.sleep(30)
