@@ -10,14 +10,11 @@ TOKEN = "8429220607:AAEW1f9pa1pIjsF1Idl6wB-trIxP94i1OZY"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# состояния пользователей
 user_states = {}
 
-# файл для хранения задач
 TASKS_FILE = "tasks.json"
 
 
-# загрузка задач
 def load_tasks():
     try:
         with open(TASKS_FILE, "r", encoding="utf-8") as f:
@@ -26,43 +23,38 @@ def load_tasks():
         return {}
 
 
-# сохранение задач
 def save_tasks(tasks):
     with open(TASKS_FILE, "w", encoding="utf-8") as f:
         json.dump(tasks, f, ensure_ascii=False, indent=2)
 
 
-# старт
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
         "Привет 👋\n\n"
-        "Я твой планировщик.\n\n"
-        "Команды:\n"
         "/add - добавить задачу\n"
         "/today - задачи на сегодня\n"
         "/all - все задачи"
     )
 
 
-# команда добавления
 @dp.message(Command("add"))
 async def add_task(message: types.Message):
     user_id = str(message.from_user.id)
+
+    # всегда принудительно включаем режим
     user_states[user_id] = "waiting_task"
 
     await message.answer(
-        "Напиши задачу в формате:\n\n"
-        "19.04 16:00 Созвон с подрядчиком"
+        "Введи задачу:\n\n"
+        "19.04 16:00 Созвон"
     )
 
 
-# обработка текста (НЕ команд)
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_text(message: types.Message):
     user_id = str(message.from_user.id)
 
-    # если не ждём задачу — игнор
     if user_states.get(user_id) != "waiting_task":
         return
 
@@ -72,13 +64,18 @@ async def handle_text(message: types.Message):
         parts = text.split(" ", 2)
 
         if len(parts) < 3:
-            raise ValueError("Неверный формат")
+            raise ValueError()
 
         date_str = parts[0]
         time_str = parts[1]
         task_text = parts[2]
 
-        dt = datetime.strptime(date_str + " " + time_str, "%d.%m %H:%M")
+        # добавляем текущий год
+        current_year = datetime.now().year
+        dt = datetime.strptime(
+            f"{date_str} {time_str} {current_year}",
+            "%d.%m %H:%M %Y"
+        )
 
         tasks = load_tasks()
 
@@ -93,17 +90,14 @@ async def handle_text(message: types.Message):
         save_tasks(tasks)
 
         # сброс состояния
-        user_states[user_id] = None
+        user_states.pop(user_id, None)
 
         await message.answer("✅ Задача добавлена")
 
     except:
-        await message.answer(
-            "❌ Неверный формат.\n\nПример:\n19.04 16:00 Созвон"
-        )
+        await message.answer("❌ Ошибка формата\nПример:\n19.04 16:00 Созвон")
 
 
-# задачи на сегодня
 @dp.message(Command("today"))
 async def today_tasks(message: types.Message):
     user_id = str(message.from_user.id)
@@ -129,7 +123,6 @@ async def today_tasks(message: types.Message):
     await message.answer(result)
 
 
-# все задачи
 @dp.message(Command("all"))
 async def all_tasks(message: types.Message):
     user_id = str(message.from_user.id)
@@ -142,7 +135,10 @@ async def all_tasks(message: types.Message):
     result = "📋 Все задачи:\n\n"
 
     for task in tasks[user_id]:
-        result += f"{task['datetime']} - {task['text']}\n"
+        dt = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
+        formatted = dt.strftime("%d.%m %H:%M")
+
+        result += f"{formatted} — {task['text']}\n"
 
     await message.answer(result)
 
