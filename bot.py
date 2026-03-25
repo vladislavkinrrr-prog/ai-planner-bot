@@ -1,3 +1,4 @@
+user_states = {}
 import asyncio
 import json
 from datetime import datetime
@@ -45,6 +46,9 @@ async def start(message: types.Message):
 # добавление задачи
 @dp.message(Command("add"))
 async def add_task(message: types.Message):
+    user_id = str(message.from_user.id)
+    user_states[user_id] = "waiting_task"
+
     await message.answer(
         "Напиши задачу в формате:\n\n"
         "19.04 16:00 Созвон с подрядчиком"
