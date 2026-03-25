@@ -22,11 +22,11 @@ user_states = {}
 TIMEZONE_OFFSET = 3
 
 
-# ✅ НИЖНИЕ КНОПКИ
+# 🔘 КНОПКИ
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить")],
-        [KeyboardButton(text="📋 Список")]
+        [KeyboardButton(text="📋 Список"), KeyboardButton(text="📊 Статистика")]
     ],
     resize_keyboard=True
 )
@@ -49,27 +49,46 @@ def save_tasks(tasks):
         json.dump(tasks, f, ensure_ascii=False, indent=2)
 
 
-# 🚀 СТАРТ
+# 🧠 УМНЫЙ ПАРСИНГ
+def parse_date(text):
+    now = now_local()
+
+    if "завтра" in text:
+        date = now + timedelta(days=1)
+    elif "сегодня" in text:
+        date = now
+    else:
+        return None
+
+    import re
+    time_match = re.search(r"(\d{1,2}):(\d{2})", text)
+
+    if not time_match:
+        return None
+
+    hour = int(time_match.group(1))
+    minute = int(time_match.group(2))
+
+    return date.replace(hour=hour, minute=minute, second=0)
+
+
+# 🚀 START
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer(
-        "Я твой планировщик, Босс 😎",
-        reply_markup=main_kb
-    )
+    await message.answer("Босс, система готова 😎", reply_markup=main_kb)
 
 
-# ➕ ДОБАВИТЬ (кнопка)
+# ➕ ДОБАВИТЬ
 @dp.message(F.text == "➕ Добавить")
-async def add_btn(message: types.Message):
-    user_states[str(message.from_user.id)] = "waiting"
-    await message.answer("Какую задачу записать, Босс 😎")
-
-
-# ➕ ДОБАВИТЬ (команда)
 @dp.message(Command("add"))
-async def add_cmd(message: types.Message):
+async def add_task(message: types.Message):
     user_states[str(message.from_user.id)] = "waiting"
-    await message.answer("Какую задачу записать, Босс 😎")
+    await message.answer(
+        "Напиши задачу:\n\n"
+        "📌 19.04 16:00 Созвон\n"
+        "📌 завтра в 18:00 тренировка\n"
+        "📌 !! срочно оплатить"
+    )
 
 
 # 📋 СПИСОК
@@ -83,12 +102,21 @@ async def show_tasks(message: types.Message):
         await message.answer("Нет задач")
         return
 
-    tasks_sorted = sorted(tasks[user_id], key=lambda x: x["datetime"])
+    tasks_sorted = sorted(
+        tasks[user_id],
+        key=lambda x: (x.get("priority", 0), x["datetime"])
+    )
 
     for i, task in enumerate(tasks_sorted):
         dt = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
 
-        text = f"{dt.strftime('%d.%m %H:%M')} — {task['text']}"
+        prefix = ""
+        if task.get("priority") == 2:
+            prefix = "🔥 "
+        elif task.get("priority") == 1:
+            prefix = "⚡ "
+
+        text = f"{prefix}{dt.strftime('%d.%m %H:%M')} — {task['text']}"
 
         if task.get("done"):
             text = "✅ " + text
@@ -103,7 +131,28 @@ async def show_tasks(message: types.Message):
         await message.answer(text, reply_markup=kb)
 
 
-# ✍️ ВВОД ЗАДАЧИ
+# 📊 СТАТИСТИКА
+@dp.message(F.text == "📊 Статистика")
+async def stats(message: types.Message):
+    user_id = str(message.from_user.id)
+    tasks = load_tasks()
+
+    if user_id not in tasks:
+        await message.answer("Нет данных")
+        return
+
+    done = sum(1 for t in tasks[user_id] if t.get("done"))
+    total = len(tasks[user_id])
+
+    await message.answer(
+        f"📊 Статистика:\n\n"
+        f"Всего задач: {total}\n"
+        f"Выполнено: {done}\n"
+        f"Активных: {total - done}"
+    )
+
+
+# ✍️ ВВОД
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = str(message.from_user.id)
@@ -111,20 +160,31 @@ async def handle_text(message: types.Message):
     if user_states.get(user_id) != "waiting":
         return
 
+    text = message.text
+
     try:
-        parts = message.text.split(" ", 2)
+        priority = 0
 
-        if len(parts) < 3:
-            raise ValueError()
+        if text.startswith("!!"):
+            priority = 2
+            text = text[2:].strip()
+        elif text.startswith("!"):
+            priority = 1
+            text = text[1:].strip()
 
-        date_str, time_str, task_text = parts
+        dt = parse_date(text)
 
-        year = now_local().year
+        if not dt:
+            parts = text.split(" ", 2)
+            date_str, time_str, task_text = parts
 
-        dt = datetime.strptime(
-            f"{date_str} {time_str} {year}",
-            "%d.%m %H:%M %Y"
-        )
+            year = now_local().year
+            dt = datetime.strptime(
+                f"{date_str} {time_str} {year}",
+                "%d.%m %H:%M %Y"
+            )
+        else:
+            task_text = text
 
         tasks = load_tasks()
 
@@ -134,6 +194,7 @@ async def handle_text(message: types.Message):
         tasks[user_id].append({
             "text": task_text,
             "datetime": dt.strftime("%Y-%m-%d %H:%M"),
+            "priority": priority,
             "done": False,
             "reminded": False
         })
@@ -145,10 +206,10 @@ async def handle_text(message: types.Message):
         await message.answer("✅ Записал, Босс")
 
     except:
-        await message.answer("❌ Формат: 19.04 16:00 Созвон")
+        await message.answer("❌ Не понял задачу")
 
 
-# 🔘 INLINE КНОПКИ
+# 🔘 INLINE
 @dp.callback_query()
 async def callbacks(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -159,9 +220,6 @@ async def callbacks(call: types.CallbackQuery):
 
     action, index = call.data.split("_")
     index = int(index)
-
-    if index >= len(tasks[user_id]):
-        return
 
     if action == "done":
         tasks[user_id][index]["done"] = True
