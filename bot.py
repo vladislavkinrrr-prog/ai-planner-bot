@@ -130,6 +130,42 @@ async def reminder_loop():
         for user_id, user_tasks in tasks.items():
             for task in user_tasks:
                 task_time = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
+                diff = (task_time - now).total_seconds()
+
+                # ✅ напоминание за 1 час (окно 60 секунд)
+                if not task.get("reminded_1h"):
+                    if 3540 <= diff <= 3600:
+                        await bot.send_message(
+                            user_id,
+                            f"⏰ Через 1 час:\n{task['text']}"
+                        )
+                        task["reminded_1h"] = True
+
+                # ✅ напоминание за день в 23:00
+                if not task.get("reminded_1d"):
+                    day_before = task_time - timedelta(days=1)
+
+                    if (
+                        now.date() == day_before.date()
+                        and now.hour == 23
+                        and now.minute == 0
+                    ):
+                        await bot.send_message(
+                            user_id,
+                            f"🌙 Завтра у тебя:\n{task['text']} в {task_time.strftime('%H:%M')}"
+                        )
+                        task["reminded_1d"] = True
+
+        save_tasks(tasks)
+
+        await asyncio.sleep(30)  # проверка чаще = надёжнее
+    while True:
+        now = datetime.now()
+        tasks = load_tasks()
+
+        for user_id, user_tasks in tasks.items():
+            for task in user_tasks:
+                task_time = datetime.strptime(task["datetime"], "%Y-%m-%d %H:%M")
 
                 # напоминание за 1 час
                 if not task.get("reminded_1h"):
