@@ -11,7 +11,7 @@ from aiogram.types import (
     InlineKeyboardButton
 )
 
-TOKEN = "ТВОЙ_ТОКЕН"
+TOKEN = "8429220607:AAEW1f9pa1pIjsF1Idl6wB-trIxP94i1OZY"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
