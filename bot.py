@@ -16,17 +16,17 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 TASKS_FILE = "tasks.json"
-user_states = {}
+user_states = {}      # "waiting_priority" для пользователей, которые выбирают приоритет
 temp_tasks = {}
 TIMEZONE_OFFSET = 3
 
 lock = asyncio.Lock()
 
-# ---------- UI ----------
+# ---------- UI (без кнопки Добавить) ----------
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="➕ Добавить"), KeyboardButton(text="📅 Сегодня")],
-        [KeyboardButton(text="📋 Список"), KeyboardButton(text="📊 Статистика")]
+        [KeyboardButton(text="📅 Сегодня"), KeyboardButton(text="📋 Список")],
+        [KeyboardButton(text="📊 Статистика")]
     ],
     resize_keyboard=True
 )
@@ -36,7 +36,7 @@ def now():
     return datetime.utcnow() + timedelta(hours=TIMEZONE_OFFSET)
 
 
-# ---------- FILE (с миграцией старых данных) ----------
+# ---------- FILE ----------
 async def load_tasks():
     async with lock:
         try:
@@ -45,14 +45,13 @@ async def load_tasks():
         except Exception:
             return {}
 
-        # Миграция старой структуры в новую (tasks + meta)
+        # Миграция старых данных
         for uid, val in list(raw_data.items()):
             if isinstance(val, list):
                 raw_data[uid] = {
                     "tasks": val,
                     "meta": {"monthly_sent": None}
                 }
-                # Миграция старых задач
                 for t in raw_data[uid]["tasks"]:
                     if "status" not in t:
                         t["status"] = "done" if t.get("done", False) else "active"
@@ -60,7 +59,7 @@ async def load_tasks():
                         t["action_date"] = None
                     if "reminded" not in t:
                         t["reminded"] = False
-                    t.pop("done", None)  # чистим старое поле
+                    t.pop("done", None)
         return raw_data
 
 
@@ -111,17 +110,13 @@ def parse(text):
 # ---------- START ----------
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("Босс, система готова 😎", reply_markup=main_kb)
+    await message.answer(
+        "Босс, система готова 😎\n\nПросто напиши задачу — я всё пойму сам.",
+        reply_markup=main_kb
+    )
 
 
-# ---------- ADD ----------
-@dp.message(F.text == "➕ Добавить")
-async def add(message: types.Message):
-    user_states[str(message.from_user.id)] = "waiting"
-    await message.answer("Что записать, Босс?")
-
-
-# ---------- TODAY (только активные задачи на сегодняшний день) ----------
+# ---------- TODAY ----------
 @dp.message(F.text == "📅 Сегодня")
 async def show_today(message: types.Message):
     user_id = str(message.from_user.id)
@@ -141,7 +136,7 @@ async def show_today(message: types.Message):
 
             displayed = True
             emoji = ["💡", "📌", "🔥"][t.get("priority", 0)]
-            task_id = t.get("task_id") or str(tasks.index(t))
+            task_id = t.get("task_id")
 
             kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="✅", callback_data=f"done_{task_id}"),
@@ -158,7 +153,40 @@ async def show_today(message: types.Message):
         await message.answer("На сегодня задач нет 🎉")
 
 
-# ---------- STATISTICS (только за сегодняшний день + подменю с кнопками) ----------
+# ---------- LIST ----------
+@dp.message(F.text == "📋 Список")
+async def list_tasks(message: types.Message):
+    user_id = str(message.from_user.id)
+    data = await load_tasks()
+    user_data = data.get(user_id, {"tasks": [], "meta": {"monthly_sent": None}})
+    tasks = user_data["tasks"]
+
+    displayed = False
+    for t in tasks:
+        if t.get("status") != "active":
+            continue
+        try:
+            dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M")
+            emoji = ["💡", "📌", "🔥"][t.get("priority", 0)]
+            task_id = t.get("task_id")
+
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅", callback_data=f"done_{task_id}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"del_{task_id}")
+            ]])
+            await message.answer(
+                f"{emoji} {dt.strftime('%d.%m %H:%M')} — {t['text']}",
+                reply_markup=kb
+            )
+            displayed = True
+        except:
+            continue
+
+    if not displayed:
+        await message.answer("Нет активных задач")
+
+
+# ---------- STATISTICS ----------
 @dp.message(F.text == "📊 Статистика")
 async def statistics(message: types.Message):
     user_id = str(message.from_user.id)
@@ -169,33 +197,22 @@ async def statistics(message: types.Message):
     today = now().date()
     today_str = today.strftime("%Y-%m-%d")
 
-    active_today = 0
-    done_today = 0
-    for t in tasks:
-        if t.get("status") == "deleted":
-            continue
-        try:
-            dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M").date()
-            if dt != today:
-                continue
-            if t.get("status") == "active":
-                active_today += 1
-            elif t.get("status") == "done" and t.get("action_date") == today_str:
-                done_today += 1
-        except:
-            continue
+    active_today = sum(1 for t in tasks if t.get("status") == "active" and 
+                       datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M").date() == today)
+    done_today = sum(1 for t in tasks if t.get("status") == "done" and t.get("action_date") == today_str)
 
     total_today = active_today + done_today
     if total_today == 0:
-        await message.answer("На сегодня задач нет 🎉\nДобавь новые с кнопки ➕")
+        await message.answer("На сегодня задач нет 🎉\nПросто напиши задачу в чат.")
         return
 
     percent = int((done_today / total_today) * 100)
 
+    # Мотивационная фраза
     if 0 <= percent <= 5:
         msg = "Мы вообще начинать планируем или это философский список задач? Давай, первая галочка самая важная."
     elif 6 <= percent <= 10:
-        msg = "Ты не выспался? Эй, бро, давай поднажмём. Вот выполненные задачи:"
+        msg = "Ты не выспался? Эй, бро, давай поднажмём."
     elif 11 <= percent <= 20:
         msg = "Ну всё, лёд тронулся. Уже не ноль — это важно. Продолжаем."
     elif 21 <= percent <= 30:
@@ -212,19 +229,11 @@ async def statistics(message: types.Message):
         msg = "Почти дожал. Осталось чуть-чуть, не тормози сейчас."
     elif 81 <= percent <= 90:
         msg = "Бро, я знал. Верил. Не зря же я тебя называю боссом."
-    elif 91 <= percent <= 100:
-        msg = "Закрыл всё. Чисто. Без шансов для прокрастинации. Уважаю."
     else:
-        msg = "Что-то странное с процентами..."
+        msg = "Закрыл всё. Чисто. Без шансов для прокрастинации. Уважаю."
 
-    stats_text = (
-        f"📊 На сегодня:\n"
-        f"Всего задач: {total_today}\n"
-        f"Выполнено: {done_today}\n"
-        f"Осталось: {active_today}"
-    )
+    stats_text = f"📊 На сегодня:\nВсего задач: {total_today}\nВыполнено: {done_today}\nОсталось: {active_today}"
 
-    # Подменю с 3 новыми кнопками
     inline_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="← Назад", callback_data="back_to_main")],
         [InlineKeyboardButton(text="✅ Выполненные задачи", callback_data="show_done_today")],
@@ -234,49 +243,25 @@ async def statistics(message: types.Message):
     await message.answer(f"{msg}\n\n{stats_text}", reply_markup=inline_kb)
 
 
-# ---------- LIST (только активные задачи) ----------
-@dp.message(F.text == "📋 Список")
-async def list_tasks(message: types.Message):
-    user_id = str(message.from_user.id)
-    data = await load_tasks()
-    user_data = data.get(user_id, {"tasks": [], "meta": {"monthly_sent": None}})
-    tasks = user_data["tasks"]
-
-    displayed = False
-    for t in tasks:
-        if t.get("status") != "active":
-            continue
-        try:
-            dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M")
-            emoji = ["💡", "📌", "🔥"][t.get("priority", 0)]
-            task_id = t.get("task_id") or str(tasks.index(t))
-
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅", callback_data=f"done_{task_id}"),
-                InlineKeyboardButton(text="🗑", callback_data=f"del_{task_id}")
-            ]])
-            await message.answer(
-                f"{emoji} {dt.strftime('%d.%m %H:%M')} — {t['text']}",
-                reply_markup=kb
-            )
-            displayed = True
-        except:
-            continue
-
-    if not displayed:
-        await message.answer("Нет задач")
-
-
-# ---------- INPUT ----------
+# ---------- ОБРАБОТКА НОВОЙ ЗАДАЧИ (главное изменение) ----------
 @dp.message(F.text)
-async def handle(message: types.Message):
+async def handle_any_text(message: types.Message):
     user_id = str(message.from_user.id)
-    if user_states.get(user_id) != "waiting":
+    text = message.text.strip()
+
+    # Игнорируем команды клавиатуры
+    if text in ["📅 Сегодня", "📋 Список", "📊 Статистика"]:
         return
 
-    dt, repeat, remind = parse(message.text)
+    # Если пользователь сейчас выбирает приоритет — игнорируем
+    if user_states.get(user_id) == "waiting_priority":
+        return
+
+    # Парсим как новую задачу
+    dt, repeat, remind = parse(text)
+
     temp_tasks[user_id] = {
-        "text": message.text,
+        "text": text,
         "datetime": dt.strftime("%Y-%m-%d %H:%M"),
         "repeat": repeat,
         "remind": remind,
@@ -285,14 +270,15 @@ async def handle(message: types.Message):
         "action_date": None,
         "reminded": False
     }
-    user_states[user_id] = "priority"
+    user_states[user_id] = "waiting_priority"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🔥", callback_data="p_2"),
         InlineKeyboardButton(text="📌", callback_data="p_1"),
         InlineKeyboardButton(text="💡", callback_data="p_0")
     ]])
-    await message.answer("Выбери приоритет:", reply_markup=kb)
+
+    await message.answer("Задача распознана!\nВыбери приоритет:", reply_markup=kb)
 
 
 # ---------- PRIORITY ----------
@@ -315,11 +301,11 @@ async def priority(call: types.CallbackQuery):
     user_states.pop(user_id, None)
     temp_tasks.pop(user_id, None)
 
-    await call.message.edit_text("✅ Записал, Босс")
+    await call.message.edit_text("✅ Задача добавлена, Босс!")
     await call.answer()
 
 
-# ---------- SUB-MENU CALLBACKS ----------
+# ---------- CALLBACKS (назад, выполненные, не нужные) ----------
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(call: types.CallbackQuery):
     try:
@@ -333,17 +319,12 @@ async def back_to_main(call: types.CallbackQuery):
 async def show_done_today(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
     data = await load_tasks()
-    user_data = data.get(user_id, {"tasks": [], "meta": {"monthly_sent": None}})
-    tasks = user_data["tasks"]
+    user_data = data.get(user_id, {"tasks": []})
     today_str = now().strftime("%Y-%m-%d")
 
-    displayed = False
-    for t in tasks:
+    for t in user_data["tasks"]:
         if t.get("status") == "done" and t.get("action_date") == today_str:
             await call.message.answer(f"✅ {t['text']}")
-            displayed = True
-    if not displayed:
-        await call.message.answer("Сегодня нет выполненных задач")
     await call.answer()
 
 
@@ -351,162 +332,106 @@ async def show_done_today(call: types.CallbackQuery):
 async def show_deleted_today(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
     data = await load_tasks()
-    user_data = data.get(user_id, {"tasks": [], "meta": {"monthly_sent": None}})
-    tasks = user_data["tasks"]
+    user_data = data.get(user_id, {"tasks": []})
     today_str = now().strftime("%Y-%m-%d")
 
-    displayed = False
-    for t in tasks:
+    for t in user_data["tasks"]:
         if t.get("status") == "deleted" and t.get("action_date") == today_str:
             await call.message.answer(f"❌ {t['text']}")
-            displayed = True
-    if not displayed:
-        await call.message.answer("Сегодня нет отправленных в не нужные задач")
     await call.answer()
 
 
-# ---------- DONE ----------
+# ---------- DONE & DELETE ----------
 @dp.callback_query(F.data.startswith("done_"))
 async def mark_done(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
     task_id = call.data.split("_", 1)[1]
     data = await load_tasks()
-    user_data = data.get(user_id, {"tasks": [], "meta": {"monthly_sent": None}})
+    user_data = data.get(user_id, {"tasks": []})
     user_tasks = user_data["tasks"]
 
-    updated = False
     for t in user_tasks:
         if t.get("task_id") == task_id:
             t["status"] = "done"
             t["action_date"] = now().strftime("%Y-%m-%d")
-            updated = True
             break
-    else:
-        # legacy fallback
-        if task_id.isdigit():
-            try:
-                idx = int(task_id)
-                if 0 <= idx < len(user_tasks):
-                    user_tasks[idx]["status"] = "done"
-                    user_tasks[idx]["action_date"] = now().strftime("%Y-%m-%d")
-                    updated = True
-            except:
-                pass
 
-    if updated:
-        await save_tasks(data)
-        try:
-            await call.message.edit_text(call.message.text + " ✅", reply_markup=None)
-        except:
-            pass
-        await call.answer("✅ Выполнено!")
-    else:
-        await call.answer("Задача не найдена")
+    await save_tasks(data)
+    try:
+        await call.message.edit_text(call.message.text + " ✅", reply_markup=None)
+    except:
+        pass
+    await call.answer("✅ Выполнено!")
 
 
-# ---------- DELETE (теперь только меняет статус, не удаляет) ----------
 @dp.callback_query(F.data.startswith("del_"))
 async def delete_task(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
     task_id = call.data.split("_", 1)[1]
     data = await load_tasks()
-    user_data = data.get(user_id, {"tasks": [], "meta": {"monthly_sent": None}})
+    user_data = data.get(user_id, {"tasks": []})
     user_tasks = user_data["tasks"]
 
-    updated = False
     for t in user_tasks:
         if t.get("task_id") == task_id:
             t["status"] = "deleted"
             t["action_date"] = now().strftime("%Y-%m-%d")
-            updated = True
             break
-    else:
-        # legacy fallback
-        if task_id.isdigit():
-            try:
-                idx = int(task_id)
-                if 0 <= idx < len(user_tasks):
-                    user_tasks[idx]["status"] = "deleted"
-                    user_tasks[idx]["action_date"] = now().strftime("%Y-%m-%d")
-                    updated = True
-            except:
-                pass
 
-    if updated:
-        await save_tasks(data)
-        try:
-            await call.message.edit_text("🗑 Задача отправлена в не нужные", reply_markup=None)
-        except:
-            pass
-        await call.answer("Отправлено в не нужные")
-    else:
-        await call.answer("Задача не найдена")
+    await save_tasks(data)
+    try:
+        await call.message.edit_text("🗑 Задача отправлена в не нужные", reply_markup=None)
+    except:
+        pass
+    await call.answer("Отправлено в не нужные")
 
 
-# ---------- REMINDER + АВТОМАТИЧЕСКИЙ МЕСЯЧНЫЙ ОТЧЁТ ----------
+# ---------- REMINDER + МЕСЯЧНЫЙ ОТЧЁТ ----------
 async def reminder_loop():
     while True:
         current = now()
         data = await load_tasks()
 
-        # ==================== МЕСЯЧНЫЙ ОТЧЁТ (последний день месяца) ====================
+        # Месячный отчёт в последний день месяца
         year = current.year
         month = current.month
         _, last_day = monthrange(year, month)
         if current.day == last_day:
             month_key = f"{year}-{month:02d}"
-
-            # следующий месяц
-            next_year = year
-            next_m = month + 1
-            if next_m > 12:
-                next_m = 1
-                next_year += 1
+            next_year, next_m = (year, month + 1) if month < 12 else (year + 1, 1)
 
             for uid_str, user_data in data.items():
-                if not isinstance(user_data, dict) or "meta" not in user_data:
-                    continue
-                meta = user_data["meta"]
+                meta = user_data.get("meta", {})
                 if meta.get("monthly_sent") == month_key:
                     continue
 
                 tasks = user_data.get("tasks", [])
-                month_total = 0
-                month_done = 0
-                next_total = 0
-
-                for t in tasks:
-                    try:
-                        dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M")
-                        if dt.year == year and dt.month == month:
-                            month_total += 1
-                            if t.get("status") == "done":
-                                month_done += 1
-                        elif dt.year == next_year and dt.month == next_m:
-                            next_total += 1
-                    except:
-                        continue
+                month_total = sum(1 for t in tasks if 
+                                  datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M").year == year and
+                                  datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M").month == month)
+                month_done = sum(1 for t in tasks if 
+                                 datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M").year == year and
+                                 datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M").month == month and
+                                 t.get("status") == "done")
+                next_total = sum(1 for t in tasks if 
+                                 datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M").year == next_year and
+                                 datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M").month == next_m)
 
                 if month_total == 0:
                     meta["monthly_sent"] = month_key
                     continue
 
-                perc = int((month_done / month_total) * 100) if month_total > 0 else 0
+                perc = int((month_done / month_total) * 100) if month_total else 0
 
-                msg1 = f"бро я в шоке от твоего интузиазма вот сколько задач было {month_total} столько ты выполнил {month_done} это {perc}% прокрастинации тебя не поймать"
-                msg2 = f"вперед ещё много задач {next_total}, давай как в этом месяце, только чтоб глаза из орбит не полезли"
+                await bot.send_message(int(uid_str), 
+                    f"бро я в шоке от твоего интузиазма вот сколько задач было {month_total} столько ты выполнил {month_done} это {perc}% прокрастинации тебя не поймать")
+                await bot.send_message(int(uid_str), 
+                    f"вперед ещё много задач {next_total}, давай как в этом месяце, только чтоб глаза из орбит не полезли")
 
-                try:
-                    await bot.send_message(int(uid_str), msg1)
-                    await bot.send_message(int(uid_str), msg2)
-                    meta["monthly_sent"] = month_key
-                except:
-                    pass
+                meta["monthly_sent"] = month_key
 
-        # ==================== НАПОМИНАНИЯ И ПОВТОРЫ ====================
+        # Напоминания и повторы
         for user_id, user_data in data.items():
-            if not isinstance(user_data, dict):
-                continue
             tasks = user_data.get("tasks", [])
             for task in tasks:
                 if task.get("status") != "active":
@@ -518,7 +443,6 @@ async def reminder_loop():
 
                 diff = (task_time - current).total_seconds() / 60
 
-                # напоминание
                 if not task.get("reminded", False) and 0 <= diff <= task.get("remind", 60):
                     try:
                         await bot.send_message(int(user_id), f"🔔 {task['text']}")
@@ -526,7 +450,6 @@ async def reminder_loop():
                     except:
                         pass
 
-                # повтор
                 if task.get("repeat") == "daily" and diff < -60:
                     task["datetime"] = (task_time + timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
                     task["reminded"] = False
