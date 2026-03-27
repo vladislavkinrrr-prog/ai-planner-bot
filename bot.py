@@ -5,7 +5,6 @@ import re
 from datetime import datetime, timedelta
 from calendar import monthrange
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-import pytz
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -23,13 +22,14 @@ user_states = {}      # waiting_priority, waiting_city
 temp_tasks = {}
 lock = asyncio.Lock()
 
-# Расширенный словарь популярных городов
+# Расширенный словарь популярных городов России
 CITY_OFFSETS = {
     "москва": 3, "новосибирск": 7, "екатеринбург": 5, "казань": 3,
     "оренбург": 5, "самара": 4, "санкт-петербург": 3, "сочи": 3,
     "владивосток": 10, "иркутск": 8, "красноярск": 7, "омск": 6,
     "волгоград": 3, "ростов": 3, "нижний новгород": 3, "пермь": 5,
     "уфа": 5, "челябинск": 5, "тюмень": 5, "барнаул": 7,
+    "ярославль": 3, "краснодар": 3, "ставрополь": 3,
 }
 
 # Многоязычные сообщения
@@ -48,7 +48,6 @@ MESSAGES = {
         "time_prompt": "Выбери город из списка или напиши свой вручную — я определю твой часовой пояс.",
         "time_updated": "✅ Часовой пояс обновлён! Теперь всё по твоему времени.",
         "language_updated": "✅ Язык изменён.",
-        "back": "Вернулись назад",
     },
     "en": {
         "start": "Boss, system is ready 😎\n\nJust write a task — I'll understand it.",
@@ -59,12 +58,10 @@ MESSAGES = {
     }
 }
 
-# Reply клавиатуры (всегда внизу)
+# Reply клавиатуры (всегда внизу экрана)
 def get_main_kb():
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📋 Задачи"), KeyboardButton(text="⚙️ Настройки")]
-        ],
+        keyboard=[[KeyboardButton(text="📋 Задачи"), KeyboardButton(text="⚙️ Настройки")]],
         resize_keyboard=True
     )
 
@@ -147,33 +144,30 @@ async def get_text(user_id: str, key: str):
     return MESSAGES.get(lang, MESSAGES["ru"]).get(key, key)
 
 
-# Улучшенное определение часового пояса
+# Улучшенное определение часового пояса по названию города
 def get_offset_from_city(city: str) -> int | None:
     city_lower = city.lower().strip()
 
-    # 1. Прямое совпадение
+    # 1. Прямое совпадение из словаря
     if city_lower in CITY_OFFSETS:
         return CITY_OFFSETS[city_lower]
 
-    # 2. Поиск через zoneinfo и pytz
+    # 2. Попытка найти через ZoneInfo
     try:
-        for tz_name in pytz.all_timezones:
-            if city_lower in tz_name.lower().replace("_", " "):
-                tz = pytz.timezone(tz_name)
-                offset = int(tz.utcoffset(datetime.utcnow()).total_seconds() / 3600)
+        # Пробуем распространённые названия
+        possible = [city_lower.replace(" ", "_").title(),
+                    city_lower.replace(" ", "_").capitalize()]
+        for name in possible:
+            try:
+                zone = ZoneInfo(name)
+                offset = int(zone.utcoffset(datetime.utcnow()).total_seconds() / 3600)
                 return offset
+            except ZoneInfoNotFoundError:
+                continue
     except:
         pass
 
-    # 3. Попытка через zoneinfo
-    try:
-        zone = ZoneInfo(city_lower.replace(" ", "_").title())
-        offset = int(zone.utcoffset(datetime.utcnow()).total_seconds() / 3600)
-        return offset
-    except:
-        pass
-
-    # 4. Парсинг числового смещения (+5, 5, -3 и т.д.)
+    # 3. Парсим числовое смещение (+5, 5, -3 и т.д.)
     match = re.search(r"([+-]?\d{1,2})", city_lower)
     if match:
         try:
@@ -184,7 +178,8 @@ def get_offset_from_city(city: str) -> int | None:
     return None
 
 
-# ---------- START ----------
+# ====================== HANDLERS ======================
+
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user_id = str(message.from_user.id)
@@ -197,13 +192,6 @@ async def start(message: types.Message):
     await message.answer(text, reply_markup=get_main_kb())
 
 
-# ---------- МЕНЮ ----------
-@dp.message(F.text == "← Назад")
-async def back_handler(message: types.Message):
-    if message.text == "← Назад":
-        await message.answer(await get_text(str(message.from_user.id), "main_menu"), reply_markup=get_main_kb())
-
-
 @dp.message(F.text == "📋 Задачи")
 async def menu_tasks(message: types.Message):
     await message.answer(await get_text(str(message.from_user.id), "tasks_menu"), reply_markup=get_tasks_kb())
@@ -214,7 +202,12 @@ async def menu_settings(message: types.Message):
     await message.answer(await get_text(str(message.from_user.id), "settings_menu"), reply_markup=get_settings_kb())
 
 
-# ---------- ВРЕМЯ ----------
+@dp.message(F.text == "← Назад")
+async def back_to_main(message: types.Message):
+    await message.answer(await get_text(str(message.from_user.id), "main_menu"), reply_markup=get_main_kb())
+
+
+# ---------- Время ----------
 @dp.message(F.text == "⏰ Время")
 async def settings_time(message: types.Message):
     user_id = str(message.from_user.id)
@@ -240,7 +233,7 @@ async def city_selected(call: types.CallbackQuery):
     await call.message.answer(await get_text(user_id, "main_menu"), reply_markup=get_main_kb())
 
 
-# ---------- ЯЗЫК ----------
+# ---------- Язык ----------
 @dp.message(F.text == "🌍 Язык")
 async def settings_language(message: types.Message):
     await message.answer("Выбери язык / Choose language", reply_markup=get_language_inline_kb())
@@ -268,16 +261,17 @@ async def back_to_settings(call: types.CallbackQuery):
     await call.answer()
 
 
-# ---------- ОБРАБОТКА ТЕКСТА (задачи + ручной ввод города) ----------
+# ---------- Добавление задачи + ручной ввод города ----------
 @dp.message(F.text)
 async def handle_any_text(message: types.Message):
     user_id = str(message.from_user.id)
     text = message.text.strip()
 
+    # Ручной ввод города
     if user_states.get(user_id) == "waiting_city":
         offset = get_offset_from_city(text)
         if offset is None:
-            await message.answer("Не удалось определить часовой пояс.\nПопробуй написать город точнее или укажи смещение, например +5")
+            await message.answer("Не удалось определить часовой пояс.\nНапиши город точнее или укажи смещение, например +5 или -3")
             return
 
         data = await load_tasks()
@@ -319,7 +313,7 @@ async def handle_any_text(message: types.Message):
     await message.answer(await get_text(user_id, "task_recognized"), reply_markup=kb)
 
 
-# ---------- ПРИОРИТЕТ ----------
+# ---------- Приоритет ----------
 @dp.callback_query(F.data.startswith("p_"))
 async def priority(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -343,7 +337,7 @@ async def priority(call: types.CallbackQuery):
     await call.answer()
 
 
-# ---------- DONE ----------
+# ---------- Выполнено / Удалено ----------
 @dp.callback_query(F.data.startswith("done_"))
 async def mark_done(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -365,7 +359,6 @@ async def mark_done(call: types.CallbackQuery):
     await call.answer(await get_text(user_id, "done"))
 
 
-# ---------- DELETE ----------
 @dp.callback_query(F.data.startswith("del_"))
 async def delete_task(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -387,7 +380,7 @@ async def delete_task(call: types.CallbackQuery):
     await call.answer()
 
 
-# ---------- TODAY, LIST, STATS (упрощённо) ----------
+# ---------- Сегодня, Список, Статистика ----------
 @dp.message(F.text == "📅 Сегодня")
 async def show_today(message: types.Message):
     user_id = str(message.from_user.id)
@@ -406,8 +399,8 @@ async def show_today(message: types.Message):
             displayed = True
             emoji = ["💡", "📌", "🔥"][t.get("priority", 0)]
             kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅", callback_data=f"done_{t['task_id']}"),
-                InlineKeyboardButton(text="🗑", callback_data=f"del_{t['task_id']}")
+                InlineKeyboardButton(text="✅", callback_data=f"done_{t.get('task_id')}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"del_{t.get('task_id')}")
             ]])
             await message.answer(f"{emoji} {dt.strftime('%d.%m %H:%M')} — {t['text']}", reply_markup=kb)
         except:
@@ -430,8 +423,8 @@ async def show_list(message: types.Message):
             dt = datetime.strptime(t["datetime"], "%Y-%m-%d %H:%M")
             emoji = ["💡", "📌", "🔥"][t.get("priority", 0)]
             kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅", callback_data=f"done_{t['task_id']}"),
-                InlineKeyboardButton(text="🗑", callback_data=f"del_{t['task_id']}")
+                InlineKeyboardButton(text="✅", callback_data=f"done_{t.get('task_id')}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"del_{t.get('task_id')}")
             ]])
             await message.answer(f"{emoji} {dt.strftime('%d.%m %H:%M')} — {t['text']}", reply_markup=kb)
             displayed = True
@@ -443,11 +436,10 @@ async def show_list(message: types.Message):
 
 @dp.message(F.text == "📊 Статистика")
 async def show_stats(message: types.Message):
-    # Простая заглушка — можно расширить
-    await message.answer("Статистика за сегодня (в разработке)")
+    await message.answer("📊 Статистика за сегодня (будет добавлена в следующей версии)")
 
 
-# ---------- PARSE (NLP) ----------
+# ---------- NLP ----------
 def parse(text: str, base: datetime):
     text = text.lower()
     if "завтра" in text:
@@ -484,11 +476,10 @@ def parse(text: str, base: datetime):
     return dt, repeat, remind
 
 
-# ---------- REMINDER LOOP ----------
+# ---------- Reminder Loop (пока пустой, можно расширить) ----------
 async def reminder_loop():
     while True:
         await asyncio.sleep(30)
-        # Здесь можно добавить напоминания и месячный отчёт (как в предыдущих версиях)
 
 
 async def main():
