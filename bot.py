@@ -2,8 +2,7 @@ import asyncio
 import json
 import re
 from datetime import datetime, timedelta
-from calendar import monthrange
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfoNotFoundError
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -17,7 +16,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 TASKS_FILE = "tasks.json"
-user_states = {}      # waiting_priority, waiting_city, waiting_note, waiting_note_date
+user_states = {}      # waiting_priority, waiting_city, waiting_note, waiting_note_date, waiting_date_for_task
 temp_tasks = {}
 temp_notes = {}
 lock = asyncio.Lock()
@@ -36,7 +35,7 @@ MESSAGES = {
         "main_menu": "Что делаем, Босс?",
         "tasks_menu": "Так, вот твои задачи.\nХочешь — смотри на сегодня, хочешь — весь список, а можешь чекнуть статистику.",
         "notes_menu": "📝 Режим заметок.\nНапиши всё, что хочешь запомнить.",
-        "ask_date": "Когда напомнить? Напиши: завтра, послезавтра, через 3 дня, или конкретную дату (15.04 в 14:00). Или «не напоминать».",
+        "ask_date": "Когда напомнить? Напиши: завтра, послезавтра, через 3 дня, или дату и время (15.04 в 14:00). Или «не напоминать».",
         "note_saved": "✅ Заметка сохранена!",
         "task_added": "✅ Задача добавлена, Босс!",
         "done": "✅ Выполнено!",
@@ -51,31 +50,22 @@ MESSAGES = {
 
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📋 Задачи"), KeyboardButton(text="📝 Заметки")],
-            [KeyboardButton(text="⚙️ Настройки")]
-        ],
-        resize_keyboard=True
-    )
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📋 Задачи"), KeyboardButton(text="📝 Заметки")],
+        [KeyboardButton(text="⚙️ Настройки")]
+    ], resize_keyboard=True)
 
 def get_tasks_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📅 Сегодня"), KeyboardButton(text="📋 Список")],
-            [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="← Назад")]
-        ],
-        resize_keyboard=True
-    )
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📅 Сегодня"), KeyboardButton(text="📋 Список")],
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="← Назад")]
+    ], resize_keyboard=True)
 
 def get_settings_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="⏰ Время"), KeyboardButton(text="🌍 Язык")],
-            [KeyboardButton(text="← Назад")]
-        ],
-        resize_keyboard=True
-    )
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="⏰ Время"), KeyboardButton(text="🌍 Язык")],
+        [KeyboardButton(text="← Назад")]
+    ], resize_keyboard=True)
 
 def get_cities_inline_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -102,7 +92,6 @@ async def load_tasks():
                 raw = json.load(f)
         except Exception:
             return {}
-
         for uid, val in list(raw.items()):
             if isinstance(val, list):
                 raw[uid] = {"tasks": val, "notes": [], "meta": {"monthly_sent": None}, "settings": {"timezone": 3, "language": "ru"}}
@@ -218,7 +207,7 @@ async def back_to_main(message: types.Message):
     await message.answer(await get_text(str(message.from_user.id), "main_menu"), reply_markup=get_main_kb())
 
 
-# ---------- Сегодня ----------
+# ==================== СЕГОДНЯ, СПИСОК, СТАТИСТИКА ====================
 @dp.message(F.text == "📅 Сегодня")
 async def show_today(message: types.Message):
     user_id = str(message.from_user.id)
@@ -247,7 +236,6 @@ async def show_today(message: types.Message):
         await message.answer(await get_text(user_id, "no_tasks_today"))
 
 
-# ---------- Список ----------
 @dp.message(F.text == "📋 Список")
 async def show_list(message: types.Message):
     user_id = str(message.from_user.id)
@@ -273,7 +261,6 @@ async def show_list(message: types.Message):
         await message.answer(await get_text(user_id, "no_active_tasks"))
 
 
-# ---------- Статистика ----------
 @dp.message(F.text == "📊 Статистика")
 async def show_stats(message: types.Message):
     user_id = str(message.from_user.id)
@@ -283,8 +270,7 @@ async def show_stats(message: types.Message):
     today = (await get_user_now(user_id)).date()
     today_str = today.strftime("%Y-%m-%d")
 
-    active_today = sum(1 for t in tasks if t.get("status") == "active" and 
-                       datetime.strptime(t.get("datetime", ""), "%Y-%m-%d %H:%M").date() == today)
+    active_today = sum(1 for t in tasks if t.get("status") == "active" and datetime.strptime(t.get("datetime", ""), "%Y-%m-%d %H:%M").date() == today)
     done_today = sum(1 for t in tasks if t.get("status") == "done" and t.get("action_date") == today_str)
 
     total = active_today + done_today
@@ -300,14 +286,14 @@ async def show_stats(message: types.Message):
     await message.answer(f"{msg}\n\n📊 На сегодня:\nВсего: {total}\nВыполнено: {done_today}\nОсталось: {active_today}")
 
 
-# ---------- Обработка любого текста ----------
+# ==================== ОСНОВНАЯ ЛОГИКА ====================
 @dp.message(F.text)
 async def handle_any_text(message: types.Message):
     user_id = str(message.from_user.id)
     text = message.text.strip()
     state = user_states.get(user_id)
 
-    # Ручной ввод города
+    # === 1. Ручной ввод города ===
     if state == "waiting_city":
         offset = get_offset_from_city(text)
         if offset is None:
@@ -322,14 +308,14 @@ async def handle_any_text(message: types.Message):
         await message.answer(await get_text(user_id, "time_updated"), reply_markup=get_main_kb())
         return
 
-    # Создание заметки
+    # === 2. Создание заметки ===
     if state == "waiting_note":
         temp_notes[user_id] = {"text": text, "created": datetime.now().strftime("%Y-%m-%d")}
         user_states[user_id] = "waiting_note_date"
         await message.answer(await get_text(user_id, "ask_date"))
         return
 
-    # Уточнение даты для заметки
+    # === 3. Уточнение даты для заметки ===
     if state == "waiting_note_date":
         note = temp_notes.get(user_id)
         if not note:
@@ -337,7 +323,6 @@ async def handle_any_text(message: types.Message):
         if text.lower() in ["не напоминать", "никогда", "не надо"]:
             note["remind_date"] = None
         else:
-            # Простой парсинг (можно улучшить)
             note["remind_date"] = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
         note["reminded"] = False
         note["id"] = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -353,18 +338,37 @@ async def handle_any_text(message: types.Message):
         await message.answer(await get_text(user_id, "note_saved"))
         return
 
-    # Добавление обычной задачи
+    # === 4. Уточнение даты для задачи ===
+    if state == "waiting_date_for_task":
+        # Здесь можно добавить более умный парсинг, пока просто сохраняем как завтра
+        task = temp_tasks.get(user_id)
+        if not task:
+            return
+        base = await get_user_now(user_id)
+        dt = base + timedelta(days=1)
+        task["datetime"] = dt.strftime("%Y-%m-%d %H:%M")
+        user_states[user_id] = "waiting_priority"
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔥", callback_data="p_2"),
+            InlineKeyboardButton(text="📌", callback_data="p_1"),
+            InlineKeyboardButton(text="💡", callback_data="p_0")
+        ]])
+        await message.answer(await get_text(user_id, "task_recognized"), reply_markup=kb)
+        return
+
+    # === 5. Обычная задача ===
     base_time = await get_user_now(user_id)
     dt, repeat, remind = parse(text, base_time)
 
-    # Если время выглядит дефолтным — уточняем дату
-    if dt.hour == 9 and dt.minute == 0 and ":" not in text.lower() and "завтра" not in text.lower():
+    # Если время дефолтное и нет явного указания даты — уточняем
+    if dt.hour == 9 and dt.minute == 0 and ":" not in text and "завтра" not in text.lower():
         temp_tasks[user_id] = {"text": text, "repeat": repeat, "remind": remind}
         user_states[user_id] = "waiting_date_for_task"
         await message.answer(await get_text(user_id, "ask_date"))
         return
 
-    # Сохраняем задачу
+    # Сохраняем сразу
     temp_tasks[user_id] = {
         "text": text,
         "datetime": dt.strftime("%Y-%m-%d %H:%M"),
@@ -386,7 +390,7 @@ async def handle_any_text(message: types.Message):
     await message.answer(await get_text(user_id, "task_recognized"), reply_markup=kb)
 
 
-# ---------- Приоритет ----------
+# Приоритет
 @dp.callback_query(F.data.startswith("p_"))
 async def priority(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -408,7 +412,7 @@ async def priority(call: types.CallbackQuery):
     await call.answer()
 
 
-# ---------- Выполнено / Удалено ----------
+# Done / Delete
 @dp.callback_query(F.data.startswith("done_"))
 async def mark_done(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -451,7 +455,7 @@ async def delete_task(call: types.CallbackQuery):
     await call.answer()
 
 
-# ---------- Настройки времени и языка ----------
+# Настройки
 @dp.message(F.text == "⏰ Время")
 async def settings_time(message: types.Message):
     user_id = str(message.from_user.id)
@@ -486,7 +490,6 @@ async def settings_language(message: types.Message):
 async def lang_selected(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
     lang = "ru" if call.data == "lang_ru" else "en"
-
     data = await load_tasks()
     if user_id not in data:
         data[user_id] = {"tasks": [], "notes": [], "meta": {}, "settings": {}}
@@ -504,11 +507,11 @@ async def back_to_settings(call: types.CallbackQuery):
     await call.answer()
 
 
-# ---------- Reminder Loop ----------
+# ==================== REMINDER LOOP ====================
 async def reminder_loop():
     while True:
         await asyncio.sleep(30)
-        # Здесь можно добавить напоминания для задач и заметок
+        # Можно добавить напоминания для задач и заметок позже
 
 
 async def main():
